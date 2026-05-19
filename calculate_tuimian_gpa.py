@@ -4,14 +4,13 @@
 
 加权平均分 = Σ(课程成绩 × 课程学分) / Σ课程学分
 
-默认读取：
-  - 课程计算清单 PDF（虚拟现实技术专业页）
-  - 本科生学业成绩表 PDF（PyMuPDF 文本提取）
+课程清单：使用脚本内置 VR_CATALOG（虚拟现实技术专业）。
+默认读取：本科生学业成绩表 PDF（PyMuPDF 文本提取）。
 
 用法:
   python calculate_tuimian_gpa.py
   python calculate_tuimian_gpa.py -o result.csv
-  python calculate_tuimian_gpa.py --list path/to/清单.pdf --transcript path/to/成绩表.pdf
+  python calculate_tuimian_gpa.py --transcript path/to/成绩表.pdf
 """
 
 from __future__ import annotations
@@ -31,13 +30,14 @@ import fitz  # PyMuPDF
 # 默认路径
 # ---------------------------------------------------------------------------
 DEFAULT_DOC_DIR = Path("/Users/pdxdydz/Desktop/Official Documents/北航推免")
-DEFAULT_LIST_PDF = DEFAULT_DOC_DIR / (
-    "北京航空航天大学计算机学院2024年推荐优秀应届本科毕业生"
-    "免试攻读研究生课程计算清单.pdf"
-)
 DEFAULT_TRANSCRIPT_PDF = DEFAULT_DOC_DIR / "本科生学业成绩表（中文）.pdf"
 DEFAULT_OUTPUT_CSV = Path(__file__).resolve().parent / "tuimian_gpa_result.csv"
 VR_MAJOR_MARKER = "虚拟现实技术专业"
+
+# 固定口径（改推免统计区间或选修门数时只改这里）
+SEMESTER_START = (2023, 3)  # 2023秋
+SEMESTER_END = (2025, 3)  # 2025秋
+ELECTIVE_COUNT = 4
 
 INTRO_COURSES = frozenset(
     {
@@ -51,7 +51,7 @@ INTRO_COURSES = frozenset(
     }
 )
 
-# 虚拟现实技术专业推免课程清单（与学院 PDF 一致；PDF 解析作校验）
+# 虚拟现实技术专业推免课程清单（与学院推免清单一致，自行维护）
 VR_CATALOG: dict[str, float] = {
     "工科数学分析（1）": 6.0,
     "工科高等代数": 6.0,
@@ -286,19 +286,10 @@ def read_pdf_text(pdf_path: Path, min_chars: int = 200) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 解析课程清单（虚拟现实技术专业页）
+# 课程清单（内置）
 # ---------------------------------------------------------------------------
-def parse_vr_catalog(list_pdf: Path) -> dict[str, float]:
-    """
-    返回虚拟现实技术专业推免课程清单。
-    以内置 VR_CATALOG 为准；若 PDF 可读则校验该页存在。
-    """
-    if list_pdf.is_file():
-        doc = fitz.open(list_pdf)
-        found = any(VR_MAJOR_MARKER in page.get_text() for page in doc)
-        doc.close()
-        if not found:
-            raise ValueError(f"未在清单 PDF 中找到「{VR_MAJOR_MARKER}」页面")
+def load_vr_catalog() -> dict[str, float]:
+    """返回内置虚拟现实技术专业推免课程清单副本。"""
     return dict(VR_CATALOG)
 
 
@@ -496,9 +487,9 @@ def select_electives(
 def calculate(
     catalog: dict[str, float],
     records: list[CourseRecord],
-    semester_start: tuple[int, int] = (2023, 3),
-    semester_end: tuple[int, int] = (2025, 3),
-    elective_count: int = 4,
+    semester_start: tuple[int, int] = SEMESTER_START,
+    semester_end: tuple[int, int] = SEMESTER_END,
+    elective_count: int = ELECTIVE_COUNT,
 ) -> CalculationResult:
     warnings: list[str] = []
 
@@ -688,19 +679,7 @@ def print_report(result: CalculationResult) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="北航推免课程加权平均分核算")
-    parser.add_argument("--list", type=Path, default=DEFAULT_LIST_PDF, help="课程计算清单 PDF")
     parser.add_argument("--transcript", type=Path, default=DEFAULT_TRANSCRIPT_PDF, help="成绩单 PDF")
-    parser.add_argument(
-        "--semester-end",
-        default="2025秋",
-        help="计入学期上限，如 2025秋（默认含 2023秋-2025秋）",
-    )
-    parser.add_argument(
-        "--semester-start",
-        default="2023秋",
-        help="计入学期下限",
-    )
-    parser.add_argument("--electives", type=int, default=4, help="专业选修门数，默认 4")
     parser.add_argument(
         "-o",
         "--output",
@@ -710,30 +689,19 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not args.list.is_file():
-        sys.exit(f"找不到课程清单: {args.list}")
     if not args.transcript.is_file():
         sys.exit(f"找不到成绩单: {args.transcript}")
 
-    print("正在解析课程清单…")
-    catalog = parse_vr_catalog(args.list)
-    print(f"  已载入清单课程 {len(catalog)} 门（{VR_MAJOR_MARKER}）")
+    print("正在载入课程清单（内置 VR_CATALOG）…")
+    catalog = load_vr_catalog()
+    print(f"  已载入 {len(catalog)} 门（{VR_MAJOR_MARKER}）")
 
     print("正在读取成绩单…")
     transcript_text = read_pdf_text(args.transcript)
     records = parse_transcript(transcript_text)
     print(f"  已解析成绩单课程 {len(records)} 条")
 
-    start = semester_key(args.semester_start)
-    end = semester_key(args.semester_end)
-
-    result = calculate(
-        catalog,
-        records,
-        semester_start=start,
-        semester_end=end,
-        elective_count=args.electives,
-    )
+    result = calculate(catalog, records)
     print_report(result)
     save_csv(result, args.output)
     print(f"\n结果已保存至: {args.output.resolve()}")
